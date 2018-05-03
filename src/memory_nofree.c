@@ -66,8 +66,6 @@ uvalue_t* memory_allocate(tag_t tag, uvalue_t size) {
   *free_boundary = header_pack(tag, size);
   uvalue_t* res = free_boundary + HEADER_SIZE;
   free_boundary += total_size;
-  int* a = 0;
-  *a += 1;
   return res;
 }
 
