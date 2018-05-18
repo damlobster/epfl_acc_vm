@@ -5,7 +5,7 @@ SHELL=/bin/bash
 SRCS=src/engine.c	\
      src/fail.c		\
      src/main.c		\
-     src/memory_nofree.c
+     src/memory_gc.c
 
 # clang sanitizers (see http://clang.llvm.org/docs/)
 CLANG_SAN_FLAGS=-fsanitize=address -fsanitize=undefined
