@@ -46,7 +46,7 @@ static uvalue_t header_unpack_size(uvalue_t header) {
  * BITMAP functions and macros
  *************************************/
 
-#define BMB_GET_WORD(n) (bitmap_start[(size_t)((n) - heap_start) / VALUE_BITS])
+/*#define BMB_GET_WORD(n) (bitmap_start[(size_t)((n) - heap_start) / VALUE_BITS])
 #define BMB_GET_BIT_IDX(n) ((size_t)((n) - heap_start) % VALUE_BITS)
 
 static inline void bm_set(const uvalue_t* p_addr) {
@@ -59,6 +59,29 @@ static inline void bm_clear(const uvalue_t* v_addr) {
 
 static inline int bm_is_set(const uvalue_t* p_addr) {
     return (BMB_GET_WORD(p_addr) >> BMB_GET_BIT_IDX(p_addr)) & (uint8_t) 1;
+}*/
+static void bm_set(uvalue_t* block) {
+    size_t bytes = (size_t)(block - heap_start);
+    size_t word = bytes / VALUE_BITS;
+    size_t bit = bytes % VALUE_BITS;
+    uvalue_t mask = ((uvalue_t) 1) << bit;
+    bitmap_start[word] |= mask;
+}
+
+static void bm_clear(uvalue_t* block) {
+    size_t bytes = (size_t)(block - heap_start);
+    size_t word = bytes / VALUE_BITS;
+    size_t bit = bytes % VALUE_BITS;
+    uvalue_t mask = ~(((uvalue_t) 1) << bit);
+    bitmap_start[word] &= mask;
+}
+
+static int bm_is_set(uvalue_t* block) {
+    size_t bytes = (size_t)(block - heap_start);
+    size_t word = bytes / VALUE_BITS;
+    size_t bit = bytes % VALUE_BITS;
+    uvalue_t mask = ((uvalue_t) 1) << bit;
+    return (bitmap_start[word] & mask) != 0;
 }
 
 /*************************************
@@ -83,7 +106,7 @@ static inline void list_set_next(uvalue_t* element, uvalue_t* next) {
  **********************/
 
 static void rec_mark(uvalue_t* root) {
-    if (root > heap_start && root <= memory_end && bm_is_set(root)) {
+    if (root > heap_start && root < memory_end && bm_is_set(root)) {
         bm_clear(root);
         uvalue_t blocksize = memory_get_block_size(root);
         for (uvalue_t i = 0; i < blocksize; ++i) {
@@ -104,25 +127,24 @@ static void mark() {
  * Sweeping & coalescing
  ************************/
 
-static uvalue_t get_block_size_corr(uvalue_t* block){
+static inline uvalue_t get_block_size(uvalue_t* block){
+    assert((char*) memory_start < (char*) block && (char*) block <= (char*) memory_end);
     uvalue_t size = header_unpack_size(block[-1]);
-    return size > 1 ? size : size + 1;
+    return size;
 }
 
 
 static void sweep() {
 
-    uvalue_t* list_last = memory_start;
-
     uvalue_t* start_free = heap_start + HEADER_SIZE;
 
-    uvalue_t* current = start_free;
-    freelist = memory_end;
-
-    while (current < memory_end) {
+    uvalue_t* current = freelist = start_free;
+    uvalue_t* list_last = current;
+    
+    while (current <= memory_end) {
 
         uvalue_t* block = current;
-        uvalue_t block_size = get_block_size_corr(block);
+        uvalue_t block_size = get_block_size(block);
 
         if (bm_is_set(block)) {
 
@@ -133,7 +155,7 @@ static void sweep() {
             if(start_free != current){
                 // coalesce adjacent free blocks
                 block = start_free;
-                block_size = get_block_size_corr(start_free) + HEADER_SIZE + block_size;
+                block_size = get_block_size(start_free) + HEADER_SIZE + block_size;
             }
             block[-1] = header_pack(tag_None, block_size);
 
@@ -159,7 +181,7 @@ static void sweep() {
 static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
     assert(heap_start != NULL);
     assert(freelist != NULL);
-    size += size < 1 ? 1 : 0;
+    size = size < 1 ? 1 : size;
 
     uvalue_t* current = freelist;
     uvalue_t* prev = NULL;
@@ -167,9 +189,9 @@ static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
     uvalue_t* best_prev = NULL;
     uvalue_t best_size = ~((uvalue_t) 0);
 
-    while (current != memory_start) {
+    while (current < memory_end) {
 
-        uvalue_t bsize = get_block_size_corr(current);
+        uvalue_t bsize = get_block_size(current);
         if (bsize == size) {
             best_prev = prev;
             best = current;
@@ -186,14 +208,28 @@ static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
 
     if (best != NULL) {
         bm_set(best);
-        best[-1] = header_pack(tag, size);
 
-        if (best_size > size) {
+        if(size == best_size){
+            // same size
+            list_set_next(best_prev, list_next(best));
+            best[-1] = header_pack(tag, size);
+        }else if(size == best_size - 1){
+            // to small to split
+            list_set_next(best_prev, list_next(best));
+            best[-1] = header_pack(tag, best_size);
+        }else{
+            best[-1] = header_pack(tag, size);
+            
+            // split block
             uvalue_t* new_block = best + size + HEADER_SIZE;
+            if(new_block >= memory_end){
+                return NULL;
+            }
             new_block[-1] = header_pack(tag_None, best_size - size - HEADER_SIZE);
             list_set_next(new_block, list_next(best));
             list_set_next(best_prev, new_block);
         }
+        
     }
     return best;
 }
