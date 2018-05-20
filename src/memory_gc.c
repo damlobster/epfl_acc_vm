@@ -90,15 +90,24 @@ static int bm_is_set(uvalue_t* block) {
 
 static inline uvalue_t* list_next(const uvalue_t* element) {
     assert(element != NULL);
-    return addr_v_to_p(*element);
+    assert(element < memory_end);
+    return addr_v_to_p(element[0]);
 }
 
 static inline void list_set_next(uvalue_t* element, uvalue_t* next) {
     if(element==NULL){
         freelist = next;
     }else {
-        *element = addr_p_to_v(next);
+        element[0] = addr_p_to_v(next);
     }
+}
+
+static uvalue_t* list_head() {
+    return freelist;
+}
+
+static uvalue_t list_is_empty(uvalue_t* element) {
+    return element == memory_end;
 }
 
 /**********************
@@ -128,17 +137,17 @@ static void mark() {
  ************************/
 
 static inline uvalue_t get_block_size(uvalue_t* block){
-    assert((char*) memory_start < (char*) block && (char*) block <= (char*) memory_end);
+    assert((char*) memory_start < (char*) block);
+    assert((char*) block <= (char*) memory_end);
     uvalue_t size = header_unpack_size(block[-1]);
     return size;
 }
 
 
 static void sweep() {
-
+    freelist = NULL;
     uvalue_t* start_free = heap_start + HEADER_SIZE;
-
-    uvalue_t* current = freelist = start_free;
+    uvalue_t* current = start_free;
     uvalue_t* list_last = current;
     
     while (current <= memory_end) {
@@ -147,7 +156,6 @@ static void sweep() {
         uvalue_t block_size = get_block_size(block);
 
         if (bm_is_set(block)) {
-
             // not reachable --> free it
             bm_clear(block);
             memset(block, 0, block_size * sizeof(uvalue_t));
@@ -160,17 +168,20 @@ static void sweep() {
             block[-1] = header_pack(tag_None, block_size);
 
             // update free list
-            if(list_last != block){
+            if(freelist == NULL){
+                freelist = block;
+            }else if(list_last != block){
                 list_set_next(list_last, block);
             }
+            list_set_next(block, memory_end);
 
         } else {
 
-            start_free += HEADER_SIZE + block_size;
+            start_free += block_size + HEADER_SIZE;
 
         }
 
-        current += HEADER_SIZE + block_size;
+        current += block_size + HEADER_SIZE;
     }
 }
 
@@ -183,13 +194,13 @@ static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
     assert(freelist != NULL);
     size = size < 1 ? 1 : size;
 
-    uvalue_t* current = freelist;
+    uvalue_t* current = list_head();
     uvalue_t* prev = NULL;
     uvalue_t* best = NULL;
     uvalue_t* best_prev = NULL;
     uvalue_t best_size = ~((uvalue_t) 0);
 
-    while (current < memory_end) {
+    while (!list_is_empty(current)) {
 
         uvalue_t bsize = get_block_size(current);
         if (bsize == size) {
@@ -207,29 +218,31 @@ static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
     }
 
     if (best != NULL) {
-        bm_set(best);
-
-        if(size == best_size){
-            // same size
-            list_set_next(best_prev, list_next(best));
-            best[-1] = header_pack(tag, size);
-        }else if(size == best_size - 1){
-            // to small to split
-            list_set_next(best_prev, list_next(best));
-            best[-1] = header_pack(tag, best_size);
-        }else{
-            best[-1] = header_pack(tag, size);
-            
+        
+        uvalue_t* new_block = NULL;
+        size = (size < best_size - 1) ? size : best_size;
+        if(size < best_size){
             // split block
-            uvalue_t* new_block = best + size + HEADER_SIZE;
-            if(new_block >= memory_end){
-                return NULL;
-            }
+            new_block = best + size + HEADER_SIZE;
             new_block[-1] = header_pack(tag_None, best_size - size - HEADER_SIZE);
-            list_set_next(new_block, list_next(best));
-            list_set_next(best_prev, new_block);
+        }
+
+        bm_set(best);
+        best[-1] = header_pack(tag, size);
+
+        uvalue_t* next = list_next(best);
+
+        if(new_block != NULL){
+            list_set_next(new_block, next);
+        }else{
+            new_block = next;
         }
         
+        if(best_prev != NULL){
+            list_set_next(best_prev, new_block);
+        }else{
+            freelist = new_block;
+        }
     }
     return best;
 }
@@ -285,14 +298,15 @@ void memory_set_heap_start(void* _heap_start) {
     assert(_heap_start != NULL);
     assert(bitmap_start == NULL);
 
-    uvalue_t heap_size = (uvalue_t) ((char*) memory_end - (char*) _heap_start) / sizeof(uvalue_t);
-    size_t bm_size = (heap_size + VALUE_BITS - 1) / (VALUE_BITS + 1);
-
+    uvalue_t total = (uvalue_t) ((char*) memory_end - (char*) _heap_start) / sizeof(uvalue_t);
+    uvalue_t bm_size = (total + VALUE_BITS - 1) / (VALUE_BITS + 1);
+    uvalue_t heap_size = total - bm_size;
+    
     bitmap_start = _heap_start;
     heap_start = bitmap_start + bm_size;
 
     freelist = heap_start + HEADER_SIZE;
-    freelist[-HEADER_SIZE] = header_pack(tag_None, heap_size - HEADER_SIZE);
+    freelist[-HEADER_SIZE] = header_pack(tag_None, (uvalue_t)(heap_size - HEADER_SIZE));
     list_set_next(freelist, memory_end);
 }
 
