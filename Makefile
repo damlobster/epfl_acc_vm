@@ -6,6 +6,7 @@ SRCS=src/engine.c	\
      src/fail.c		\
      src/main.c		\
      src/memory_gc.c
+     #src/memory_mark_n_sweep.c
 
 # clang sanitizers (see http://clang.llvm.org/docs/)
 CLANG_SAN_FLAGS=-fsanitize=address -fsanitize=undefined
