@@ -11,12 +11,9 @@
 
 #define HEADER_SIZE 1
 
-#define FL_SIZE 64
+#define FL_SIZE 32
 #define FREELIST_STEP 1
 static uvalue_t* FL[FL_SIZE] = {NULL};
-static int FL_r[FL_SIZE] = {-1};
-static int FL_w[FL_SIZE] = {-1};
-static int FL_size = FL_SIZE;
 
 #ifdef GC_COUNT
 static uvalue_t gc_count = 0;
@@ -37,7 +34,6 @@ static inline void* addr_v_to_p(uvalue_t v_addr) {
 }
 
 static inline uvalue_t addr_p_to_v(void* p_addr) {
-    //assert((char*) memory_start <= (char*) p_addr && (char*) p_addr <= (char*) memory_end);
     return (uvalue_t) ((char*) p_addr - (char*) memory_start);
 }
 
@@ -51,15 +47,11 @@ static inline tag_t header_unpack_tag(uvalue_t header) {
 
 static inline uvalue_t header_unpack_size(uvalue_t header) {
     uvalue_t size = header >> (uint8_t) 8;
-    //assert(size>0); //REMOVEME
     return size;
 }
 
 static inline uvalue_t get_block_size(uvalue_t* block){
-    //assert((char*) memory_start < (char*) block);
-    //assert((char*) block <= (char*) memory_end);
     uvalue_t size = header_unpack_size(block[-1]);
-    //assert(size>0);
     return size;
 }
 
@@ -108,8 +100,6 @@ static inline int list_idx(uvalue_t size){
 }
 
 static inline uvalue_t* list_next(const uvalue_t* element) {
-    //assert(element != NULL);
-    //assert(element > memory_start);
     return addr_v_to_p(element[0]);
 }
 
@@ -124,14 +114,11 @@ static inline void list_remove_next(uvalue_t* element){
 }
 
 static inline void list_prepend(int idx, uvalue_t* element) {
-    //assert(0 <= idx && idx < FL_SIZE);
     element[0] = addr_p_to_v(FL[idx]);
     FL[idx] = element;
 }
 
 static inline void list_pop_head(int idx){
-    //assert(0 <= idx && idx < FL_SIZE);
-    //assert(!list_is_empty(FL[idx]));
     FL[idx] = list_next(FL[idx]);
 }
 
@@ -152,7 +139,7 @@ static inline void rec_mark(uvalue_t* root) {
     }
 }
 
-static void mark() {
+static inline void mark() {
 #ifdef GC_COUNT
     gc_count++;
 #endif
@@ -165,7 +152,7 @@ static void mark() {
  * Sweeping & coalescing
  ************************/
 
-static void sweep() {
+static inline void sweep() {
     
     list_init();
     uvalue_t* start_free = heap_start + HEADER_SIZE;
@@ -175,14 +162,12 @@ static void sweep() {
     while (current <= memory_end) {
 
         uvalue_t block_size = get_block_size(current);
-        //assert(block_size<=(memory_end-bitmap_start));
         
         if (bm_is_set(current)) {
             // not reachable --> free it
             bm_clear(current);
             memset(current, 0, block_size * sizeof(uvalue_t));
             current[-HEADER_SIZE] = header_pack(tag_None, block_size);
-            //assert(block_size<=(memory_end-bitmap_start));
         }
         
         if (get_block_tag(current) == tag_None) {
@@ -193,8 +178,6 @@ static void sweep() {
                 current = start_free;
                 block_size += get_block_size(start_free) + HEADER_SIZE;
                 current[-1] = header_pack(tag_None, block_size);
-                
-                //assert(block_size<=(memory_end-bitmap_start));
             }
 
             // update free list
@@ -220,8 +203,7 @@ static void sweep() {
  * Blocks allocation
  ****************************/
 
-static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
-    //assert(heap_start != NULL);
+static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
     if(size == 0){ size = 1; }
 
     uvalue_t* block = NULL;
@@ -242,7 +224,7 @@ static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
                     // split block
                     new_free = block + size + HEADER_SIZE;
                     uvalue_t new_free_size = total_size - size - HEADER_SIZE;
-                    //assert(new_free_size > 0);
+
                     new_free[-1] = header_pack(tag_None, new_free_size);
                     if(prev == NULL){
                         list_pop_head(i);
@@ -262,7 +244,6 @@ static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
                 block[-HEADER_SIZE] = header_pack(tag, size);
                 block[0] = 0;
                 
-                //assert(((unsigned long)block & 3) == 0);
                 return block;
             }
             
@@ -342,7 +323,6 @@ void memory_set_heap_start(void* p_addr) {
     uvalue_t* free = heap_start + HEADER_SIZE;
     free[-HEADER_SIZE] = header_pack(tag_None, (uvalue_t)(heap_size - HEADER_SIZE));
     list_prepend(FL_SIZE-1, free);
-
 }
 
 uvalue_t memory_get_block_size(uvalue_t* block) {
