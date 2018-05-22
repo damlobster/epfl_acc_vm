@@ -9,14 +9,16 @@
 #include "fail.h"
 #include "engine.h"
 
+#define debug(fmt, ...) fprintf(stdout, (fmt), __VA_ARGS__)
+
 #define HEADER_SIZE 1
 
-#define FL_SIZE 64
-#define FREELIST_STEP 1
+#define FL_SIZE 32
+#define FL_RATIO 2
 static uvalue_t* FL[FL_SIZE] = {NULL};
-static int FL_r[FL_SIZE] = {-1};
-static int FL_w[FL_SIZE] = {-1};
+static uvalue_t FL_access[FL_SIZE] = {0};
 static int FL_size = FL_SIZE;
+static int FL_step = 1;
 
 #ifdef GC_COUNT
 static uvalue_t gc_count = 0;
@@ -97,14 +99,33 @@ static inline int bm_is_set(uvalue_t* block) {
  *************************************/
 
 static inline void list_init(){
-    for(int i = 0; i < FL_SIZE; i++){
+    uvalue_t total = 0;
+    for(int i = 0; i < FL_size; i++){
+        total += FL_access[i];
+    }
+    
+    if(total > 0){
+        total /= FL_RATIO;
+        uvalue_t count = 0;
+        FL_size = 0;
+        for(; FL_size < FL_SIZE && count < total/FL_RATIO; FL_size++){
+            count += FL_access[FL_size];
+            FL_access[FL_size] = 0;
+            //count += FL_prep[i];
+        }
+    }else{
+        FL_step = 1;
+        FL_size = FL_SIZE;
+    }
+    
+    for(uvalue_t i = 0; i < FL_SIZE; i++){
         FL[i] = memory_start;
     }
 }
 
 static inline int list_idx(uvalue_t size){
-    int idx = (int)(size - 1) / FREELIST_STEP;
-    return idx < FL_SIZE ? idx : FL_SIZE - 1;
+    int idx = (int)(size - 1) / FL_step;
+    return idx < FL_size ? idx : FL_size - 1;
 }
 
 static inline uvalue_t* list_next(const uvalue_t* element) {
@@ -127,12 +148,14 @@ static inline void list_prepend(int idx, uvalue_t* element) {
     //assert(0 <= idx && idx < FL_SIZE);
     element[0] = addr_p_to_v(FL[idx]);
     FL[idx] = element;
+    //FL_access[idx]++;
 }
 
 static inline void list_pop_head(int idx){
     //assert(0 <= idx && idx < FL_SIZE);
     //assert(!list_is_empty(FL[idx]));
     FL[idx] = list_next(FL[idx]);
+    //FL_access[idx]++;
 }
 
 /**********************
@@ -228,11 +251,15 @@ static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
     uvalue_t* prev = NULL;
     
     // find best free list
-    for(int i = list_idx(size); i < FL_SIZE; i++){
+    int idx = list_idx(size);
+    for(int i = idx; i < FL_size; i++){
+        //debug("qwertz %d\n", i);
+        
         prev = NULL;
         block = FL[i];
-        
+        //debug("x\n", NULL);
         while(block != memory_start){
+            FL_access[idx]++;
             uvalue_t* new_free = NULL;
             uvalue_t total_size = get_block_size(block);
             
@@ -305,6 +332,16 @@ void memory_setup(size_t total_byte_size) {
 }
 
 void memory_cleanup() {
+#ifdef GC_COUNT
+    printf("GC COUNT = %d\n", gc_count);
+    fflush(stdout);
+#endif
+    debug("FL_size=%d\n", FL_size);
+    debug("FL_step=%d\n", FL_step);
+    for(int i=0; i <FL_size; i++){
+        debug("%d: %u\n", i, FL_access[i]);
+    }
+    
     assert(memory_start != NULL);
     free(memory_start);
 
@@ -313,10 +350,6 @@ void memory_cleanup() {
     for(int i = 0; i < FL_SIZE; i++){
         FL[i] = NULL;
     }
-#ifdef GC_COUNT
-    printf("GC COUNT = %d\n", gc_count);
-    fflush(stdout);
-#endif
 }
 
 void* memory_get_start() {
