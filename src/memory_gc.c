@@ -12,8 +12,8 @@
 #define HEADER_SIZE 1
 
 #define FL_SIZE 32
-#define FREELIST_STEP 1
 static uvalue_t* FL[FL_SIZE] = {NULL};
+static uvalue_t FL_bm[FL_SIZE + 1] = {0};
 
 #ifdef GC_COUNT
 static uvalue_t gc_count = 0;
@@ -63,25 +63,37 @@ static inline tag_t get_block_tag(uvalue_t* block) {
  * BITMAP functions
  *************************************/
 
-static inline void bm_set(uvalue_t* block) {
-    uvalue_t bytes = (uvalue_t)(block - heap_start);
+static inline void _bm_set(uvalue_t* bm, uvalue_t bytes) {
     uvalue_t index = bytes / VALUE_BITS;
     uvalue_t mask = ((uvalue_t) 1) << (bytes % VALUE_BITS);
-    bitmap_start[index] |= mask;
+    bm[index] |= mask;
+}
+
+static inline void _bm_clear(uvalue_t* bm, uvalue_t bytes) {
+    uvalue_t index = bytes / VALUE_BITS;
+    uvalue_t mask = ~(((uvalue_t) 1) << (bytes % VALUE_BITS));
+    bm[index] &= mask;
+}
+
+static inline int _bm_is_set(uvalue_t* bm, uvalue_t bytes) {
+    uvalue_t index = bytes / VALUE_BITS;
+    uvalue_t mask = ((uvalue_t) 1) << (bytes % VALUE_BITS);
+    return (bm[index] & mask) != 0;
+}
+
+static inline void bm_set(uvalue_t* block) {
+    uvalue_t bytes = (uvalue_t)(block - heap_start);
+    _bm_set(bitmap_start, bytes);
 }
 
 static inline void bm_clear(uvalue_t* block) {
     uvalue_t bytes = (uvalue_t)(block - heap_start);
-    uvalue_t index = bytes / VALUE_BITS;
-    uvalue_t mask = ~(((uvalue_t) 1) << (bytes % VALUE_BITS));
-    bitmap_start[index] &= mask;
+    _bm_clear(bitmap_start, bytes);
 }
 
 static inline int bm_is_set(uvalue_t* block) {
     uvalue_t bytes = (uvalue_t)(block - heap_start);
-    uvalue_t index = bytes / VALUE_BITS;
-    uvalue_t mask = ((uvalue_t) 1) << (bytes % VALUE_BITS);
-    return (bitmap_start[index] & mask) != 0;
+    return _bm_is_set(bitmap_start, bytes);
 }
 
 /*************************************
@@ -91,11 +103,26 @@ static inline int bm_is_set(uvalue_t* block) {
 static inline void list_init(){
     for(int i = 0; i < FL_SIZE; i++){
         FL[i] = memory_start;
+        FL_bm[i] = 0;
     }
+    FL_bm[FL_SIZE] = 0;
 }
 
+static inline uvalue_t* list_find(uvalue_t size){
+    uvalue_t mask = (uvalue_t)~0 >> (size / VALUE_BITS);
+    uvalue_t i = FL_bm[0] & ~mask;
+    if(i == 0) return NULL;
+    i = (uvalue_t)__builtin_clz(FL_bm[0] & ~mask);
+    mask = (uvalue_t)~0 >> (size % VALUE_BITS);
+    uvalue_t j = FL_bm[i+1] & ~mask;
+    assert(j != 0);
+    j = (uvalue_t)__builtin_clz(FL_bm[0] & ~mask);
+    return FL[i]+j;
+}
+                                 
+                                 
 static inline int list_idx(uvalue_t size){
-    int idx = (int)(size - 1) / FREELIST_STEP;
+    int idx = (int)(size - 1);
     return idx < FL_SIZE ? idx : FL_SIZE - 1;
 }
 
@@ -114,12 +141,22 @@ static inline void list_remove_next(uvalue_t* element){
 }
 
 static inline void list_prepend(int idx, uvalue_t* element) {
+    uvalue_t size = get_block_size(element);
+    uvalue_t** fl = &FL[size / VALUE_BITS]
+    if(fl == memory_start){
+        *fl = element
+    }else{
+        
+    }
     element[0] = addr_p_to_v(FL[idx]);
     FL[idx] = element;
+    _bm_set(&FL_bm, size / VALUE_BITS);
+    _bm_set(&FL_bm[1], size);
 }
 
 static inline void list_pop_head(int idx){
     FL[idx] = list_next(FL[idx]);
+    
 }
 
 /**********************
