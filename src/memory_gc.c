@@ -11,12 +11,16 @@
 
 #define HEADER_SIZE 1
 
+//#define debug(fmt, ...) fprintf(stderr, (fmt), __VA_ARGS__)
+//#define debug(fmt, ...) do {} while(0)
+
 #define FL_SIZE 32
-#define FREELIST_STEP 1
 static uvalue_t* FL[FL_SIZE] = {NULL};
 
-#ifdef GC_COUNT
+#ifdef GC_STATS
 static uvalue_t gc_count = 0;
+static uvalue_t live_count = 0; 
+static uvalue_t marked_count = 0;
 #endif
 
 static uvalue_t* memory_start = NULL;
@@ -88,17 +92,6 @@ static inline int bm_is_set(uvalue_t* block) {
  * FREE LIST
  *************************************/
 
-static inline void list_init(){
-    for(int i = 0; i < FL_SIZE; i++){
-        FL[i] = memory_start;
-    }
-}
-
-static inline int list_idx(uvalue_t size){
-    int idx = (int)(size - 1) / FREELIST_STEP;
-    return idx < FL_SIZE ? idx : FL_SIZE - 1;
-}
-
 static inline uvalue_t* list_next(const uvalue_t* element) {
     return addr_v_to_p(element[0]);
 }
@@ -111,6 +104,17 @@ static inline void list_remove_next(uvalue_t* element){
             next[0] = 0;
         }
     }
+}
+
+static inline void list_init(){
+    for(int i = 0; i < FL_SIZE; i++){
+        FL[i] = memory_start;
+    }
+}
+
+static inline int list_idx(uvalue_t size){
+    int idx = (int)(size - 1);
+    return idx < FL_SIZE ? idx : FL_SIZE - 1;
 }
 
 static inline void list_prepend(int idx, uvalue_t* element) {
@@ -126,26 +130,31 @@ static inline void list_pop_head(int idx){
  *  Marking
  **********************/
 
-static inline void rec_mark(uvalue_t* root) {
+static void rec_mark(uvalue_t* root) {
     if (root > heap_start && root <= memory_end && bm_is_set(root)) {
         bm_clear(root);
+
         uvalue_t blocksize = get_block_size(root);
-        
         for (uvalue_t i = 0; i < blocksize; ++i) {
             if (root[i] != 0 && (root[i] & 3) == 0) {
                 rec_mark(addr_v_to_p(root[i]));
             }
         }
+
+        #ifdef GC_STATS
+        marked_count++;
+        #endif
     }
 }
 
 static inline void mark() {
-#ifdef GC_COUNT
-    gc_count++;
-#endif
     rec_mark(engine_get_Ib());
     rec_mark(engine_get_Lb());
     rec_mark(engine_get_Ob());
+
+    #ifdef GC_STATS
+    gc_count++;
+    #endif
 }
 
 /************************
@@ -153,8 +162,8 @@ static inline void mark() {
  ************************/
 
 static inline void sweep() {
-    
     list_init();
+
     uvalue_t* start_free = heap_start + HEADER_SIZE;
     uvalue_t* current = start_free;
     int last_list = -1;
@@ -162,25 +171,33 @@ static inline void sweep() {
     while (current <= memory_end) {
 
         uvalue_t block_size = get_block_size(current);
-        
+
         if (bm_is_set(current)) {
-            // not reachable --> free it
+            // block is not reachable --> free it
             bm_clear(current);
             memset(current, 0, block_size * sizeof(uvalue_t));
             current[-HEADER_SIZE] = header_pack(tag_None, block_size);
         }
         
         if (get_block_tag(current) == tag_None) {
+            
             // coalesce adjacent free blocks
             if(start_free < current){
                 current[-HEADER_SIZE] = 0;
-                current[0] = 0;
-                current = start_free;
+                if(block_size > 0){
+                    // only clear list_next pointer if size > 0
+                    current[0] = 0; 
+                }
+                
+                // rewind current pointer to start of coalesced block
+                current = start_free; 
+                
+                // update size of new free block
                 block_size += get_block_size(start_free) + HEADER_SIZE;
                 current[-1] = header_pack(tag_None, block_size);
             }
 
-            // update free list
+            // update free lists
             int idx = list_idx(block_size);
             if(idx != last_list){
                 if(last_list >= 0){
@@ -189,12 +206,18 @@ static inline void sweep() {
                 list_prepend(idx, current);
                 last_list = idx;
             }
-        } else {
+        } else { // the block is not free
+            // point start_free on next block
             start_free = current + block_size + HEADER_SIZE;
             bm_set(current);
             last_list = -1;
+
+            #ifdef GC_STATS
+            live_count++;
+            #endif
         }
 
+        // move to next block
         current += block_size + HEADER_SIZE;
     }
 }
@@ -203,12 +226,13 @@ static inline void sweep() {
  * Blocks allocation
  ****************************/
 
-static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
-    if(size == 0){ size = 1; }
-
+// I choosed to use the first fit strategy
+static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {    
     uvalue_t* block = NULL;
     uvalue_t* prev = NULL;
-    
+
+    if(size == 0) size = 1;
+
     // find best free list
     for(int i = list_idx(size); i < FL_SIZE; i++){
         prev = NULL;
@@ -219,20 +243,25 @@ static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
             uvalue_t total_size = get_block_size(block);
             
             if(size <= total_size){
-                size = size < total_size - 1 ? size : total_size;
+                // we found a candidate
                 if(size < total_size){
-                    // split block
-                    new_free = block + size + HEADER_SIZE;
-                    uvalue_t new_free_size = total_size - size - HEADER_SIZE;
-
-                    new_free[-1] = header_pack(tag_None, new_free_size);
+                    // the block has to be splitted
                     if(prev == NULL){
                         list_pop_head(i);
                     }else{
                         list_remove_next(prev);
                     }
-                    list_prepend(list_idx(new_free_size), new_free);
+
+                    new_free = block + size + HEADER_SIZE;
+                    uvalue_t new_free_size = total_size - size - HEADER_SIZE;
+                    new_free[-1] = header_pack(tag_None, new_free_size);
+                    if(new_free_size > 0){
+                        // we add the trailing free block to a free list 
+                        // only if it size > 0 
+                        list_prepend(list_idx(new_free_size), new_free);
+                    }
                 }else{
+                    // size match perfectly
                     if(prev == NULL){
                         list_pop_head(i);
                     }else{
@@ -247,6 +276,7 @@ static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
                 return block;
             }
             
+            // go to next block in current freelist
             prev = block;
             block = list_next(block);
         }
@@ -260,6 +290,7 @@ uvalue_t* memory_allocate(tag_t tag, uvalue_t size) {
 
     uvalue_t* block = block_allocate(tag, size);
     if (block == NULL) {
+        // Ouch! Cleanup garbage!
         mark();
         sweep();
         block = block_allocate(tag, size);
@@ -294,10 +325,14 @@ void memory_cleanup() {
     for(int i = 0; i < FL_SIZE; i++){
         FL[i] = NULL;
     }
-#ifdef GC_COUNT
-    printf("GC COUNT = %d\n", gc_count);
-    fflush(stdout);
-#endif
+    
+    #ifdef GC_STATS
+    printf("\n**********************************");
+    printf("\nGC COUNT = %d", gc_count);
+    printf("\nMarked count = %d", marked_count);
+    printf("\nLive count = %d", live_count);
+    printf("\n**********************************");
+    #endif
 }
 
 void* memory_get_start() {
