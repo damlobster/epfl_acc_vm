@@ -4,7 +4,7 @@ import sys
 import os
 from time import time
 
-os.system('make')
+os.system('make stats')
 
 # Start Timestamp
 start = time()

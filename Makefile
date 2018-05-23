@@ -27,10 +27,14 @@ CFLAGS_DEBUG=${CFLAGS_COMMON} ${CLANG_SAN_FLAGS} -g
 # Flags for maximum performance:
 CFLAGS_RELEASE=${CFLAGS_COMMON} -O3 -DNDEBUG -march=native -flto
 
-#CFLAGS=${CFLAGS_DEBUG}
+debug: CFLAGS=${CFLAGS_DEBUG} -DGC_COUNT
+stats: CFLAGS=${CFLAGS_RELEASE} -DGC_COUNT
 CFLAGS=${CFLAGS_RELEASE}
 
 all: vm
+
+debug: all
+stats: all
 
 vm: ${SRCS}
 	mkdir -p bin
