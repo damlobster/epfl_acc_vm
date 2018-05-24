@@ -13,10 +13,6 @@ if args[0].startswith('-'):
 
 os.system('make ' + make_arg)
 
-# Start Timestamp
 start = time()
-
-# Commands here (eg: TCP connect test or something useful)
 os.system('echo {} | bin/vm test/{}.asm'.format(' '.join(args[1:]), args[0]))
-
 print('\nElapsed time = {}'.format(time()-start))
