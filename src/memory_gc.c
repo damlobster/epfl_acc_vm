@@ -331,7 +331,7 @@ void memory_cleanup() {
     printf("\nGC COUNT = %d", gc_count);
     printf("\nMarked count = %d", marked_count);
     printf("\nLive count = %d", live_count);
-    printf("\n**********************************");
+    printf("\n**********************************\n");
     #endif
 }
 
