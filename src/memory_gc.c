@@ -59,6 +59,10 @@ static inline uvalue_t get_block_size(uvalue_t* block){
     return size;
 }
 
+static inline uvalue_t real_size(uvalue_t size){
+    return size == 0 ? 1 : size;
+}
+
 static inline tag_t get_block_tag(uvalue_t* block) {
     return header_unpack_tag(block[-1]);
 }
@@ -113,7 +117,7 @@ static inline void list_init(){
 }
 
 static inline int list_idx(uvalue_t size){
-    int idx = (int)(size - 1);
+    int idx = (int)real_size(size) - 1;
     return idx < FL_SIZE ? idx : FL_SIZE - 1;
 }
 
@@ -170,7 +174,7 @@ static inline void sweep() {
     
     while (current <= memory_end) {
 
-        uvalue_t block_size = get_block_size(current);
+        uvalue_t block_size = real_size(get_block_size(current)); 
 
         if (bm_is_set(current)) {
             // block is not reachable --> free it
@@ -184,23 +188,20 @@ static inline void sweep() {
             // coalesce adjacent free blocks
             if(start_free < current){
                 current[-HEADER_SIZE] = 0;
-                if(block_size > 0){
-                    // only clear list_next pointer if size > 0
-                    current[0] = 0; 
-                }
+                current[0] = 0; 
                 
                 // rewind current pointer to start of coalesced block
                 current = start_free; 
                 
                 // update size of new free block
                 block_size += get_block_size(start_free) + HEADER_SIZE;
-                current[-1] = header_pack(tag_None, block_size);
+                current[-HEADER_SIZE] = header_pack(tag_None, block_size);
             }
 
             // update free lists
             int idx = list_idx(block_size);
             if(idx != last_list){
-                if(last_list >= 0){
+                if(last_list != -1){
                     list_pop_head(last_list);
                 }
                 list_prepend(idx, current);
@@ -230,36 +231,33 @@ static inline void sweep() {
 static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {    
     uvalue_t* block = NULL;
     uvalue_t* prev = NULL;
-
-    if(size == 0) size = 1;
+    uvalue_t realsize = real_size(size);
 
     // find best free list
     for(int i = list_idx(size); i < FL_SIZE; i++){
+        if(i == (int)realsize){ continue; }
+
         prev = NULL;
         block = FL[i];
-        
+
         while(block != memory_start){
             uvalue_t* new_free = NULL;
             uvalue_t total_size = get_block_size(block);
-            
-            if(size <= total_size){
+
+            if(realsize <= total_size){
                 // we found a candidate
-                if(size < total_size){
-                    // the block has to be splitted
+                if(realsize < total_size){
+                    // the block must be splitted
                     if(prev == NULL){
                         list_pop_head(i);
                     }else{
                         list_remove_next(prev);
                     }
 
-                    new_free = block + size + HEADER_SIZE;
-                    uvalue_t new_free_size = total_size - size - HEADER_SIZE;
-                    new_free[-1] = header_pack(tag_None, new_free_size);
-                    if(new_free_size > 0){
-                        // we add the trailing free block to a free list 
-                        // only if it size > 0 
-                        list_prepend(list_idx(new_free_size), new_free);
-                    }
+                    new_free = block + realsize + HEADER_SIZE;
+                    uvalue_t new_free_size = total_size - realsize - HEADER_SIZE;
+                    new_free[-HEADER_SIZE] = header_pack(tag_None, new_free_size);
+                    list_prepend(list_idx(new_free_size), new_free);
                 }else{
                     // size match perfectly
                     if(prev == NULL){
@@ -325,7 +323,7 @@ void memory_cleanup() {
     for(int i = 0; i < FL_SIZE; i++){
         FL[i] = NULL;
     }
-    
+
     #ifdef GC_STATS
     printf("\n**********************************");
     printf("\nGC COUNT = %d", gc_count);
