@@ -11,23 +11,23 @@
 
 #define HEADER_SIZE 1
 
-//#define debug(fmt, ...) fprintf(stderr, (fmt), __VA_ARGS__)
-//#define debug(fmt, ...) do {} while(0)
-
-#define FL_SIZE 32
-static uvalue_t* FL[FL_SIZE] = {NULL};
-
-#ifdef GC_STATS
-static uvalue_t gc_count = 0;
-static uvalue_t live_count = 0; 
-static uvalue_t marked_count = 0;
-#endif
-
 static uvalue_t* memory_start = NULL;
 static uvalue_t* memory_end = NULL;
 
 static uvalue_t* heap_start = NULL;
 static uvalue_t* bitmap_start = NULL;
+
+// I use a "bitmap" to mark the non empty free lists (see list_find())
+static uint64_t FL_bm = 0UL;
+#define FL_SIZE (int)(8 * sizeof(uint64_t))
+static uvalue_t* FL[FL_SIZE] = {NULL};
+
+#ifdef GC_STATS
+// counters for basic GC statistics
+static uvalue_t gc_count = 0;
+static uvalue_t live_count = 0; 
+static uvalue_t marked_count = 0;
+#endif
 
 /*************************************
  * UTILS functions
@@ -96,6 +96,13 @@ static inline int bm_is_set(uvalue_t* block) {
  * FREE LIST
  *************************************/
 
+static inline void list_init(){
+    for(size_t i = 0; i < FL_SIZE; i++){
+        FL[i] = memory_start;
+    }
+    FL_bm = 0UL;
+}
+
 static inline uvalue_t* list_next(const uvalue_t* element) {
     return addr_v_to_p(element[0]);
 }
@@ -110,24 +117,48 @@ static inline void list_remove_next(uvalue_t* element){
     }
 }
 
-static inline void list_init(){
-    for(int i = 0; i < FL_SIZE; i++){
-        FL[i] = memory_start;
-    }
-}
-
 static inline int list_idx(uvalue_t size){
     int idx = (int)real_size(size) - 1;
     return idx < FL_SIZE ? idx : FL_SIZE - 1;
 }
 
 static inline void list_prepend(int idx, uvalue_t* element) {
+    // if the freelist was empty, mark it non empty
+    if(element != memory_start && FL[idx] == memory_start){
+        FL_bm |= 1UL << idx;
+    }
+
     element[0] = addr_p_to_v(FL[idx]);
     FL[idx] = element;
 }
 
-static inline void list_pop_head(int idx){
+static inline void list_remove_head(int idx){
     FL[idx] = list_next(FL[idx]);
+
+    // Update freelists bitmap
+    if(FL[idx] == memory_start){
+        FL_bm &= ~(1UL << idx);
+    }
+}
+
+static inline int list_find(uvalue_t size){
+    int idx = list_idx(size);
+    
+    // start searching from the freelist containing blocks of same size 
+    uint64_t mask = ~0UL << idx;
+    // but skip the freelist of size = size+1
+    if(idx < FL_SIZE - 1){
+        mask ^= 1UL << (idx + 1);
+    }
+    uint64_t bits = (uint64_t)(FL_bm & mask);
+    
+    // if bm is 0 -> all free list >= size are empty
+    if(bits == 0UL){
+        return -1;
+    }
+    
+    idx = __builtin_ctzll(bits);
+    return idx;
 }
 
 /**********************
@@ -202,7 +233,7 @@ static inline void sweep() {
             int idx = list_idx(block_size);
             if(idx != last_list){
                 if(last_list != -1){
-                    list_pop_head(last_list);
+                    list_remove_head(last_list);
                 }
                 list_prepend(idx, current);
                 last_list = idx;
@@ -233,53 +264,48 @@ static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
     uvalue_t* prev = NULL;
     uvalue_t realsize = real_size(size);
 
-    // find best free list
-    for(int i = list_idx(size); i < FL_SIZE; i++){
-        if(i == (int)realsize){ continue; }
+    int idx = list_find(realsize);
+    if(idx < 0) return NULL;
 
-        prev = NULL;
-        block = FL[i];
+    prev = NULL;
+    block = FL[idx];
 
-        while(block != memory_start){
-            uvalue_t* new_free = NULL;
-            uvalue_t total_size = get_block_size(block);
+    while(block != memory_start){
+        uvalue_t* new_free = NULL;
+        uvalue_t total_size = get_block_size(block);
 
-            if(realsize <= total_size){
-                // we found a candidate
-                if(realsize < total_size){
-                    // the block must be splitted
-                    if(prev == NULL){
-                        list_pop_head(i);
-                    }else{
-                        list_remove_next(prev);
-                    }
+        if(realsize <= total_size){
 
-                    new_free = block + realsize + HEADER_SIZE;
-                    uvalue_t new_free_size = total_size - realsize - HEADER_SIZE;
-                    new_free[-HEADER_SIZE] = header_pack(tag_None, new_free_size);
-                    list_prepend(list_idx(new_free_size), new_free);
-                }else{
-                    // size match perfectly
-                    if(prev == NULL){
-                        list_pop_head(i);
-                    }else{
-                        list_remove_next(prev);
-                    }
-                }
-                
-                bm_set(block);
-                block[-HEADER_SIZE] = header_pack(tag, size);
-                block[0] = 0;
-                
-                return block;
+            // we found a candidate -> remove it from old free list
+            if(prev == NULL){
+                list_remove_head(idx);
+            }else{
+                list_remove_next(prev);
+            }
+
+            if(realsize < total_size){
+                // the allocated block is smaller -> split it
+                new_free = block + realsize + HEADER_SIZE;
+                uvalue_t new_free_size = total_size - realsize - HEADER_SIZE;
+                new_free[-HEADER_SIZE] = header_pack(tag_None, new_free_size);
+                list_prepend(list_idx(new_free_size), new_free);
             }
             
-            // go to next block in current freelist
-            prev = block;
-            block = list_next(block);
+            // initilize the new block
+            bm_set(block);
+            block[-HEADER_SIZE] = header_pack(tag, size);
+            block[0] = 0;
+            
+            return block;
         }
+        
+        // if we are here, we are in last free list
+        // -> go to next block
+        prev = block;
+        block = list_next(block);
     }
     
+    // no block found
     return NULL;
 }
 
