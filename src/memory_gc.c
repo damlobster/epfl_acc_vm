@@ -117,11 +117,6 @@ static inline void list_remove_next(uvalue_t* element){
     }
 }
 
-static inline int list_idx(uvalue_t size){
-    int idx = (int)real_size(size) - 1;
-    return idx < FL_SIZE ? idx : FL_SIZE - 1;
-}
-
 static inline void list_prepend(int idx, uvalue_t* element) {
     // if the freelist was empty, mark it non empty
     if(element != memory_start && FL[idx] == memory_start){
@@ -139,6 +134,11 @@ static inline void list_remove_head(int idx){
     if(FL[idx] == memory_start){
         FL_bm &= ~(1UL << idx);
     }
+}
+
+static inline int list_idx(uvalue_t size){
+    int idx = (int)real_size(size) - 1;
+    return idx < FL_SIZE ? idx : FL_SIZE - 1;
 }
 
 static inline int list_find(uvalue_t size){
@@ -265,7 +265,9 @@ static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
     uvalue_t realsize = real_size(size);
 
     int idx = list_find(realsize);
-    if(idx < 0) return NULL;
+    if(idx < 0){ 
+        return NULL; 
+    }
 
     prev = NULL;
     block = FL[idx];
@@ -299,7 +301,7 @@ static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
             return block;
         }
         
-        // if we are here, we are in last free list
+        // if we are here, we are in the last free list
         // -> go to next block
         prev = block;
         block = list_next(block);
