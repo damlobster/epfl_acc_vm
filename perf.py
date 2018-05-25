@@ -1,18 +1,28 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 import sys
 import os
 from time import time
+import numpy as np
 
-args = sys.argv[1:]
+import argparse
 
-make_arg = ''
-if args[0].startswith('-'):
-    make_arg = args[0][1:]
-    args = args[1:]
+parser = argparse.ArgumentParser(description='Do performance tests of L3 vm')
+parser.add_argument('-m', dest='heap', default=1000000, help="Heap size in bytes")
+parser.add_argument('-n', dest='n', default=1, help='Number of iterations', type=int)
+parser.add_argument('-b', dest='make', nargs='*', default='', help='Arguments passed to make')
+parser.add_argument('-s', "--silent", dest='silent', action="store_true", default=False, help='Redirect output to /dev/null')
+parser.add_argument(dest='l3', nargs='+', default='', help='The L3/ASM file and its argument')
 
-os.system('make ' + make_arg)
+args = parser.parse_args()
+if 0 != os.system('make ' + ' '.join(args.make)):
+    exit()
 
-start = time()
-os.system('echo {} | bin/vm test/{}.asm'.format(' '.join(args[1:]), args[0]))
-print('\nElapsed time = {}'.format(time()-start))
+times = []
+for i in range(args.n):
+    start = time()
+    os.system('echo {} | bin/vm test/{}.asm {}'.format(' '.join(args.l3[1:]), args.l3[0], ' > /dev/null' if args.silent else ''))
+    times += [time()-start]
+    print('.', end='', flush=True)
+
+print('\nElapsed times: {} +/- {}'.format(np.mean(times), np.std(times)))
