@@ -9,6 +9,9 @@
 #include "fail.h"
 #include "engine.h"
 
+//#define debug(fmt, ...) fprintf(stderr, (fmt), __VA_ARGS__)
+#define debug(fmt, ...) do {} while(0)
+
 #define HEADER_SIZE 1
 
 static uvalue_t* memory_start = NULL;
@@ -18,8 +21,9 @@ static uvalue_t* heap_start = NULL;
 static uvalue_t* bitmap_start = NULL;
 
 // I use a "bitmap" to mark the non empty free lists (see list_find())
-static uint64_t FL_bm = 0UL;
-#define FL_SIZE (int)(8 * sizeof(uint64_t))
+#define FL_SIZE 512
+static uvalue_t FL_mbm = 0;
+static uvalue_t FL_bm[FL_SIZE / VALUE_BITS] = {0};
 static uvalue_t* FL[FL_SIZE] = {NULL};
 
 #ifdef GC_STATS
@@ -99,8 +103,9 @@ static inline int bm_is_set(uvalue_t* block) {
 static inline void list_init(){
     for(size_t i = 0; i < FL_SIZE; i++){
         FL[i] = memory_start;
+        if(i % VALUE_BITS == 0){FL_bm[i / FL_SIZE] = 0;}
     }
-    FL_bm = 0UL;
+    FL_mbm = 0;
 }
 
 static inline uvalue_t* list_next(const uvalue_t* element) {
@@ -124,40 +129,85 @@ static inline int list_idx(uvalue_t size){
 
 static inline void list_prepend(int idx, uvalue_t* element) {
     // if the freelist was empty, mark it non empty
-    if(element != memory_start && FL[idx] == memory_start){
-        FL_bm |= 1UL << idx;
-    }
+    int midx = idx / (int)VALUE_BITS;
+    debug("PRE idx=%d, midx=%d (x%x", idx, midx, FL_mbm);
 
+    //assert(element != memory_start);
+    //assert(FL[idx] == memory_start);
+
+    FL_mbm |= 1U << midx;
+    debug("->x%x), FL_bm[%d]=(x%x->", FL_mbm, midx, FL_bm[midx]);
+    FL_bm[midx] |= 1U << ((uvalue_t)idx % VALUE_BITS);
+    debug("x%x)\n", FL_bm[midx]);
     element[0] = addr_p_to_v(FL[idx]);
     FL[idx] = element;
 }
 
 static inline void list_remove_head(int idx){
+    assert(FL[idx] > memory_start);
     FL[idx] = list_next(FL[idx]);
 
     // Update freelists bitmap
-    if(FL[idx] == memory_start){
-        FL_bm &= ~(1UL << idx);
+    int midx = idx / (int)VALUE_BITS;
+        debug("DEL idx=%d, midx=%d (x%x", idx, midx, FL_mbm);
+    if(FL_bm[midx] == 0U){
+        FL_mbm &= ~0U ^ (1U << midx);
     }
+        debug("->x%x), FL_bm[%d]=(x%x->", FL_mbm, midx, FL_bm[midx]);
+    FL_bm[midx] &= ~(1U << ((uvalue_t)idx % VALUE_BITS));
+        debug("x%x)\n", FL_bm[midx]);
 }
 
-static inline int list_find(uvalue_t size){
+static inline int _list_find(uvalue_t size){
+        debug("_list_find(%u) (FL_mbm=x%x)\n", size, FL_mbm);
+    if(size >= FL_SIZE) return -1;
     int idx = list_idx(size);
+    int midx = idx / (int)VALUE_BITS;
     
-    // start searching from the freelist containing blocks of same size 
-    uint64_t mask = ~0UL << idx;
-    // but skip the freelist of size = size+1
-    if(idx < FL_SIZE - 1){
-        mask ^= 1UL << (idx + 1);
-    }
-    uint64_t bits = (uint64_t)(FL_bm & mask);
+        debug("  idx=%d, midx=%u\n", idx, midx);
+
+    uvalue_t mask = ~0U << midx;
+    uvalue_t bits = FL_mbm & mask;
     
-    // if bm is 0 -> all free list >= size are empty
-    if(bits == 0UL){
+        debug("  mmask=x%x, mbits=x%x\n", mask, bits);
+
+    // if master bm is 0 -> all free list >= size are empty
+    if(bits == 0){
         return -1;
     }
     
-    idx = __builtin_ctzll(bits);
+    midx = __builtin_ctzl(bits);
+        debug("  midx=%d\n", midx);
+    // start searching from the freelist containing blocks of same size 
+    idx = (uvalue_t) idx % VALUE_BITS;
+        debug("  idx%%32=%d\n", idx);
+
+    mask = ~0U << (idx);
+        debug("  mask=x%x\n", mask);
+    if(idx != VALUE_BITS - 1){
+        // skip the freelist of size = size+1
+        mask ^= 1U << (idx + 1);
+    }
+    
+    bits = FL_bm[midx] & mask;
+        debug("  FL_bm[%d]=x%x, mask=x%x, bits=x%x\n", midx, FL_bm[midx], mask, bits);
+    // if bm is 0 -> all free list >= size are empty
+    if(bits == 0){
+        return _list_find(((uvalue_t)(midx+1) * VALUE_BITS + 1));
+    }
+
+    idx = __builtin_ctzl(bits);
+        debug("  idx=%d\n", midx * (int)VALUE_BITS + idx);
+    return midx * (int)VALUE_BITS + idx;
+}
+
+static inline int list_find(uvalue_t size){
+    int idx = _list_find(size);
+    debug("%d\n", idx);
+/*     if((idx == -1) && ((size-1) % VALUE_BITS == VALUE_BITS - 1)){
+        idx = _list_find(size + 2);
+        debug("...%d\n", idx);
+    }*/    
     return idx;
 }
 
@@ -183,6 +233,9 @@ static void rec_mark(uvalue_t* root) {
 }
 
 static inline void mark() {
+
+    debug("GC !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n", NULL);
+
     rec_mark(engine_get_Ib());
     rec_mark(engine_get_Lb());
     rec_mark(engine_get_Ob());
@@ -197,6 +250,8 @@ static inline void mark() {
  ************************/
 
 static inline void sweep() {
+    debug("FL_mbm = %x (before sw)\n", FL_mbm);
+
     list_init();
 
     uvalue_t* start_free = heap_start + HEADER_SIZE;
@@ -252,6 +307,8 @@ static inline void sweep() {
         // move to next block
         current += block_size + HEADER_SIZE;
     }
+
+    debug("FL_mbm = %x (after sw)\n", FL_mbm);
 }
 
 /****************************
@@ -270,6 +327,9 @@ static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
     prev = NULL;
     block = FL[idx];
 
+    if(block == memory_start){
+        debug("BA empty list\n", NULL);
+    }
     while(block != memory_start){
         uvalue_t* new_free = NULL;
         uvalue_t total_size = get_block_size(block);
@@ -288,6 +348,8 @@ static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
                 new_free = block + realsize + HEADER_SIZE;
                 uvalue_t new_free_size = total_size - realsize - HEADER_SIZE;
                 new_free[-HEADER_SIZE] = header_pack(tag_None, new_free_size);
+
+                debug("SW nfreesize=%u\n", new_free_size);
                 list_prepend(list_idx(new_free_size), new_free);
             }
             
