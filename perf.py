@@ -25,4 +25,4 @@ for i in range(args.n):
     times += [time()-start]
     print('.', end='', flush=True)
 
-print('\nElapsed times: {} +/- {}'.format(np.mean(times), np.std(times)))
+print('\nElapsed times: {:.6f} +/- {:.6f}'.format(np.mean(times), np.std(times)))
