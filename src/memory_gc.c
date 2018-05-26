@@ -50,13 +50,11 @@ static inline tag_t header_unpack_tag(uvalue_t header) {
 }
 
 static inline uvalue_t header_unpack_size(uvalue_t header) {
-    uvalue_t size = header >> (uint8_t) 8;
-    return size;
+    return header >> (uint8_t) 8;
 }
 
 static inline uvalue_t get_block_size(uvalue_t* block){
-    uvalue_t size = header_unpack_size(block[-1]);
-    return size;
+    return header_unpack_size(block[-1]);
 }
 
 static inline uvalue_t real_size(uvalue_t size){
@@ -96,7 +94,7 @@ static inline int bm_is_set(uvalue_t* block) {
  * FREE LIST
  *************************************/
 
-static inline void list_init(){
+static void list_init(){
     for(size_t i = 0; i < FL_SIZE; i++){
         FL[i] = memory_start;
     }
@@ -107,7 +105,7 @@ static inline uvalue_t* list_next(const uvalue_t* element) {
     return addr_v_to_p(element[0]);
 }
 
-static inline void list_remove_next(uvalue_t* element){
+static void list_remove_next(uvalue_t* element){
     if(element != memory_start){
         uvalue_t* next = list_next(element);
         if(next != memory_start){
@@ -117,7 +115,7 @@ static inline void list_remove_next(uvalue_t* element){
     }
 }
 
-static inline void list_prepend(int idx, uvalue_t* element) {
+static void list_prepend(int idx, uvalue_t* element) {
     // if the freelist was empty, mark it non empty
     if(element != memory_start && FL[idx] == memory_start){
         FL_bm |= 1UL << idx;
@@ -127,7 +125,7 @@ static inline void list_prepend(int idx, uvalue_t* element) {
     FL[idx] = element;
 }
 
-static inline void list_remove_head(int idx){
+static void list_remove_head(int idx){
     FL[idx] = list_next(FL[idx]);
 
     // Update freelists bitmap
@@ -141,7 +139,7 @@ static inline int list_idx(uvalue_t size){
     return idx < FL_SIZE ? idx : FL_SIZE - 1;
 }
 
-static inline int list_find(uvalue_t size){
+static int list_find(uvalue_t size){
     int idx = list_idx(size);
     
     // start searching from the freelist containing blocks of same size 
@@ -182,7 +180,7 @@ static void rec_mark(uvalue_t* root) {
     }
 }
 
-static inline void mark() {
+static void mark() {
     rec_mark(engine_get_Ib());
     rec_mark(engine_get_Lb());
     rec_mark(engine_get_Ob());
@@ -196,7 +194,7 @@ static inline void mark() {
  * Sweeping & coalescing
  ************************/
 
-static inline void sweep() {
+static void sweep() {
     list_init();
 
     uvalue_t* start_free = heap_start + HEADER_SIZE;
@@ -259,7 +257,7 @@ static inline void sweep() {
  ****************************/
 
 // I choosed to use the first fit strategy
-static inline uvalue_t* block_allocate(tag_t tag, uvalue_t size) {    
+static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {    
     uvalue_t* block = NULL;
     uvalue_t* prev = NULL;
     uvalue_t realsize = real_size(size);
