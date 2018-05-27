@@ -1,6 +1,5 @@
 {
     "files.associations": {
         "stdlib.h": "c"
-    },
-    "cquery.cacheDirectory": "${workspaceFolder}/.vscode/cquery_cached_index/"
+    }
 }
