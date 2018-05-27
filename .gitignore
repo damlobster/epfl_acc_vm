@@ -6,3 +6,5 @@ bin
 \.idea/
 
 acc-vm\.xcodeproj/
+.vscode/.ropeproject
+.vscode/cquery_cached_index
