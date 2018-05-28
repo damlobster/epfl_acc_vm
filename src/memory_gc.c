@@ -264,7 +264,7 @@ static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
 
   int idx = list_find(realsize);
   if(idx < 0){ 
-      return NULL; 
+    return NULL; 
   }
 
   prev = NULL;
@@ -295,7 +295,8 @@ static uvalue_t* block_allocate(tag_t tag, uvalue_t size) {
       bm_set(block);
       block[-HEADER_SIZE] = header_pack(tag, size);
       block[0] = 0;
-          
+      
+      // block found !
       return block;
     }
       
