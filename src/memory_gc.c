@@ -18,8 +18,9 @@ static uvalue_t* heap_start = NULL;
 static uvalue_t* bitmap_start = NULL;
 
 // I use a "bitmap" to mark the non empty free lists (see list_find())
-static uint64_t FL_bm = 0UL;
-#define FL_SIZE (int)(8 * sizeof(uint64_t))
+#define fl_bm_type unsigned long long
+static fl_bm_type FL_bm = 0UL;
+#define FL_SIZE (int)(8 * sizeof(fl_bm_type))
 static uvalue_t* FL[FL_SIZE] = {NULL};
 
 #ifdef GC_STATS
@@ -143,16 +144,20 @@ static int list_find(uvalue_t size){
   int idx = list_idx(size);
     
   // start searching from the freelist containing blocks of same size 
-  uint64_t mask = ~0UL << idx;
+  fl_bm_type mask = ~0UL << idx;
   // but skip the freelist of size = size+1
   if(idx < FL_SIZE - 1){
     mask ^= 1UL << (idx + 1);
   }
-  uint64_t bits = (uint64_t)(FL_bm & mask);
+  fl_bm_type bits = (fl_bm_type)(FL_bm & mask);
     
   // if bm is 0 -> all free list >= size are empty
   if(bits == 0UL){
-    return -1;
+    if((FL_bm & 1UL << (idx + 1)) == 0){
+      return idx + 1; 
+    }else{
+      return -1;
+    }
   }
   
   idx = __builtin_ctzll(bits);
