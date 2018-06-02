@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# Utility script to measure performance of the VM
+
 import sys
 import os
 from time import time

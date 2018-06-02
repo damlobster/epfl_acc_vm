@@ -5,7 +5,7 @@ SHELL=/bin/bash
 SRCS=src/engine.c	\
      src/fail.c		\
      src/main.c		\
-     src/memory_gc_2.c
+	 src/memory_mark_n_sweep.c
 
 # clang sanitizers (see http://clang.llvm.org/docs/)
 CLANG_SAN_FLAGS=-fsanitize=address -fsanitize=undefined
@@ -25,13 +25,15 @@ CFLAGS_DEBUG=${CFLAGS_COMMON} ${CLANG_SAN_FLAGS} -g
 CFLAGS_RELEASE=${CFLAGS_COMMON} -O3 -DNDEBUG -march=native -flto
 
 CFLAGS=${CFLAGS_RELEASE}
-debug: CFLAGS=${CFLAGS_DEBUG} -DGC_STATS
+debug: CFLAGS=${CFLAGS_DEBUG}
 stats: CFLAGS=${CFLAGS_RELEASE} -DGC_STATS
+no0blocks: CFLAGS=${CFLAGS_RELEASE} -DGC_STATS -DNO_0_BLOCKS
 
 all: vm
 
 debug: all
 stats: all
+no0blocks: all
 
 vm: ${SRCS}
 	mkdir -p bin

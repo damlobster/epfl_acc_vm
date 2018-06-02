@@ -9,9 +9,6 @@
 #include "fail.h"
 #include "engine.h"
 
-//#define debug(fmt, ...) fprintf(stderr, (fmt), __VA_ARGS__)
-#define debug(fmt, ...) do {} while (false)
-
 #define HEADER_SIZE 1
 
 static uvalue_t *memory_start = NULL;
@@ -24,14 +21,11 @@ static uvalue_t *bitmap_start = NULL;
 static uvalue_t *FL[FL_SIZE] = {NULL};
 
 #ifdef GC_STATS
-// counters for basic GC statistics
 static uvalue_t gc_count = 0;
-static uvalue_t live_count = 0;
-static uvalue_t marked_count = 0;
 #endif
 
 /*************************************
- * UTILS functions
+ * UTILS
  *************************************/
 
 static inline void *addr_v_to_p(uvalue_t v_addr){
@@ -67,7 +61,7 @@ static inline tag_t get_block_tag(uvalue_t *block){
 }
 
 /*************************************
- * BITMAP functions
+ * BITMAP
  *************************************/
 
 static inline void bm_set(uvalue_t *block){
@@ -92,12 +86,11 @@ static inline int bm_is_set(uvalue_t *block){
 }
 
 /*************************************
- * FREE LIST
+ * FREE LISTS
  *************************************/
 
-static void list_init(){
-    for (size_t i = 0; i < FL_SIZE; i++)
-    {
+static inline void list_init(){
+    for (size_t i = 0; i < FL_SIZE; i++){
         FL[i] = memory_start;
     }
 }
@@ -106,7 +99,7 @@ static inline uvalue_t *list_next(const uvalue_t *element){
     return addr_v_to_p(element[0]);
 }
 
-static void list_remove_next(uvalue_t *element){
+static inline void list_remove_next(uvalue_t *element){
     if (element != memory_start){
         uvalue_t *next = list_next(element);
         if (next != memory_start){
@@ -116,41 +109,23 @@ static void list_remove_next(uvalue_t *element){
     }
 }
 
-static void list_prepend(int idx, uvalue_t *element){
+static inline void list_prepend(int idx, uvalue_t *element){
     element[0] = addr_p_to_v(FL[idx]);
     FL[idx] = element;
 }
 
-static void list_pop_head(int idx){
-    // uvalue_t* block = FL[idx];
-    // uvalue_t* next = list_next(block);
-    // FL[idx] = next;
-
-    // return block;
+static inline void list_remove_head(int idx){
     FL[idx] = list_next(FL[idx]);
 }
 
 static inline int list_idx(uvalue_t size){
-    int idx = (int)real_size(size) - 1;
+    int idx = (int)size - 1;
     return idx < FL_SIZE ? idx : FL_SIZE - 1;
 }
 
-static void list_print(){
-    for (int idx = 0; idx < FL_SIZE; idx++){
-        uvalue_t *cur = FL[idx];
-        if (cur != memory_start){
-            debug("FL[%d]: ", idx);
-            while (cur != memory_start){
-                debug("%d, ", get_block_size(cur));
-                cur = list_next(cur);
-            }
-            debug("\n", NULL);
-        }
-    }
-}
-/**********************
+/*************************************
  *  Marking
- **********************/
+ *************************************/
 
 static void rec_mark(uvalue_t *root){
     if (root > heap_start && root <= memory_end && bm_is_set(root)){
@@ -162,34 +137,29 @@ static void rec_mark(uvalue_t *root){
                 rec_mark(addr_v_to_p(root[i]));
             }
         }
-
-#ifdef GC_STATS
-        marked_count++;
-#endif
     }
 }
 
 static void mark(){
-    debug("GC ****************************\n", NULL);
     rec_mark(engine_get_Ib());
     rec_mark(engine_get_Lb());
     rec_mark(engine_get_Ob());
 
-#ifdef GC_STATS
+    #ifdef GC_STATS
     gc_count++;
-#endif
+    #endif
 }
 
-/************************
+/*************************************
  * Sweeping & coalescing
- ************************/
+ *************************************/
 static inline uvalue_t coalesce(uvalue_t* start_free, uvalue_t* current, uvalue_t cur_size){
     current[-HEADER_SIZE] = 0;
     if (cur_size > 0)
         current[0] = 0;
 
     // update size of new free block
-    uvalue_t free_size = current - start_free + cur_size;
+    uvalue_t free_size = (uvalue_t)(current - start_free) + cur_size;
     start_free[-HEADER_SIZE] = header_pack(tag_None, free_size);
 
     return free_size;
@@ -199,12 +169,10 @@ static void sweep(){
     list_init();
 
     uvalue_t *start_free = heap_start + HEADER_SIZE;
-    uvalue_t free_size = 0;
     uvalue_t *current = start_free;
     int last_list = -1;
 
     while (current <= memory_end){
-
         uvalue_t current_size = get_block_size(current);
 
         if (bm_is_set(current)){
@@ -216,34 +184,20 @@ static void sweep(){
         }
 
         if (get_block_tag(current) == tag_None){
-
-            free_size += current_size;
             // coalesce adjacent free blocks
             if (start_free < current){
-                current[-HEADER_SIZE] = 0;
-                if (current_size > 0){
-                    current[0] = 0;
-                }
-                free_size += HEADER_SIZE;
-
-                // update size of new free block
-                start_free[-HEADER_SIZE] = header_pack(tag_None, free_size);
-
-                // rewind current pointer to start of coalesced block
+                current_size = coalesce(start_free, current, current_size);
                 current = start_free;
-                current_size = free_size;
             }
 
             // update free lists
-            int idx = list_idx(free_size);
+            int idx = list_idx(current_size);
             if (idx != last_list){
                 if (last_list != -1){
-                    list_pop_head(last_list);
+                    list_remove_head(last_list);
                 }
-                if (current_size > 0){
-                    list_prepend(idx, current);
-                    last_list = idx;
-                }
+                list_prepend(idx, current);
+                last_list = idx;
             }
         }else{ 
             // the block is not free -> point start_free on next block
@@ -251,71 +205,74 @@ static void sweep(){
             start_free = current + current_size + HEADER_SIZE;
             bm_set(current);
             last_list = -1;
-            free_size = 0;
-
-#ifdef GC_STATS
-            live_count++;
-#endif
         }
 
         current += current_size + HEADER_SIZE;
     }
 }
 
-/****************************
+/*************************************
  * Blocks allocation
- ****************************/
+ *************************************/
 
-// I choosed to use the first fit strategy
 static uvalue_t *block_allocate(tag_t tag, uvalue_t size){
     uvalue_t realsize = real_size(size);
-    debug("BA %u", size);
-    for (int idx = list_idx(realsize); idx < FL_SIZE; idx++){
-        uvalue_t *free_block = FL[idx];
+    int fl_idx = list_idx(realsize); 
+    for (int idx = fl_idx; idx < FL_SIZE; idx++){
+        #ifdef NO_0_BLOCKS
+        if((fl_idx != FL_SIZE - 2) && (idx == fl_idx + 1)){ continue; }
+        #endif
+
+        uvalue_t *block = FL[idx];
         uvalue_t *prev = NULL;
 
-        while (free_block != memory_start){
-            debug(", (%lu)", free_block - heap_start);
-            uvalue_t *new_free = NULL;
-            uvalue_t free_size = get_block_size(free_block);
 
-            if (realsize <= free_size){
-                debug(", f=%d", free_size);
+        while (block != memory_start){
+            uvalue_t total_size = get_block_size(block);
 
+            #ifdef NO_0_BLOCKS
+            if (realsize <= total_size && realsize != total_size - 1){
+            #else
+            if (realsize <= total_size){
+            #endif
                 // we found a candidate -> remove it from old free list
                 if (prev == NULL){
-                    list_pop_head(idx);
+                    list_remove_head(idx);
                 }else{
                     list_remove_next(prev);
                 }
 
-                if (realsize < free_size){
-                    // the allocated block is smaller -> split it
-                    new_free = free_block + realsize + HEADER_SIZE;
-                    uvalue_t new_free_size = free_size - realsize - HEADER_SIZE;
+                if (realsize < total_size){
+                    // the allocated block is smaller -> split it 
+                    uvalue_t *new_free = block + realsize + HEADER_SIZE;
+                    uvalue_t new_free_size = total_size - realsize - HEADER_SIZE;
                     new_free[-HEADER_SIZE] = header_pack(tag_None, new_free_size);
-                    debug(", nf=%d", new_free_size);
-                    if (new_free_size != 0){
-                        debug("*", NULL);
+
+                    if (new_free_size > 0){
+                        // Note: if the remaining free size is 0, a tag_None block of size 0
+                        // is created on the heap, I let him alone as it will be coalesced with
+                        // one of the adjacent block when they are collected.
+                        // My tests showed me that this is better (than try to find an another
+                        // block with enough space) in term of performance and often result in an
+                        // out of memory crash happening later (except for the maze program).
+                        // To disable this: build with "make no0blocks"
                         list_prepend(list_idx(new_free_size), new_free);
                     }
                 }
 
                 // initilize the new block
-                bm_set(free_block);
-                free_block[-HEADER_SIZE] = header_pack(tag, size);
-                free_block[0] = 0;
-                debug("\n", NULL);
-                return free_block;
+                bm_set(block);
+                block[-HEADER_SIZE] = header_pack(tag, size);
+                block[0] = 0;
+                return block;
             }
 
             // if we are here, we are in the last free list
             // -> go to next block
-            prev = free_block;
-            free_block = list_next(free_block);
+            prev = block;
+            block = list_next(block);
         }
     }
-    debug(" ->GC\n", NULL);
     // no block found
     return NULL;
 }
@@ -338,9 +295,9 @@ uvalue_t *memory_allocate(tag_t tag, uvalue_t size){
     return block;
 }
 
-/********************************
+/*************************************
  * Memory initialization and teardown
- ********************************/
+ *************************************/
 char *memory_get_identity(){
     return "Mark and Sweep GC";
 }
@@ -363,11 +320,7 @@ void memory_cleanup(){
     }
 
 #ifdef GC_STATS
-    printf("\n**********************************");
-    printf("\nGC COUNT = %d", gc_count);
-    printf("\nMarked count = %d", marked_count);
-    printf("\nLive count = %d", live_count);
-    printf("\n**********************************\n");
+    printf("\nGC COUNT = %d\n", gc_count);
 #endif
 }
 
